@@ -1,4 +1,4 @@
-
+import math
 from clize import run
 from skimage.io import imsave
 import numpy as np
@@ -15,7 +15,8 @@ import torchvision.utils as vutils
 
 from machinedesign.viz import grid_of_images_default
 
-from model import Gen, SparseGen
+from model import Gen
+from model import AE
 from model import Discr
 from model import Clf
 
@@ -80,6 +81,43 @@ class Gray:
     def __call__(self, x):
         return x[0:1]
 
+def ae():
+    lr = 1e-4
+    batch_size = 64
+    dataset_name = 'fonts'
+    train = _load_dataset(dataset_name, split='train')
+    trainl = torch.utils.data.DataLoader(
+        train, 
+        batch_size=batch_size,
+        shuffle=True, 
+        num_workers=1
+    )
+    x0, _ = train[0]
+    nc = x0.size(0)
+    ae = AE(nc=nc)
+    ae = ae.cuda()
+    opt = optim.Adam(ae.parameters(), lr=lr, betas=(0.5, 0.999))
+    nb_epochs = 40
+    avg_loss = 0.
+    nb_updates = 0
+    for epoch in range(nb_epochs):
+        for X, _ in trainl:
+            X = Variable(X).cuda()
+            ae.zero_grad()
+            Xrec, h = ae(X)
+            e1 = ((X - Xrec)**2).mean()
+            e2 = -((h  - 0.5) ** 2).sum(1).mean()
+            e3 = torch.abs(h.mean(1) - 0.5).sum()
+            loss = e1 + 0.05*(e2 + e3)
+            loss.backward()
+            opt.step()
+            avg_loss = avg_loss * 0.9 + loss.data[0] * 0.1
+            nb_updates += 1
+            if nb_updates % 100 == 0:
+                print('Epoch {:03d}/{:03d}, Avg loss : {:.3f}'.format(epoch + 1, nb_epochs, avg_loss))
+                print(h.data)
+        torch.save(ae, 'out/ae.th')
+
 
 def clf():
     lr = 1e-4
@@ -143,9 +181,9 @@ def clf():
 
 def train():
     lr = 0.0002
-    cond = 0
+    cond = 100
     batch_size = 64
-    nz = 100 
+    nz = 20 
     nb_epochs = 100
     folder = 'out'
     dataset_name = 'fonts' 
@@ -240,9 +278,10 @@ def train():
         
             # update generator
             gen.zero_grad()
+            fake = gen(noise_and_cond)
             labelv = Variable(label.fill_(real_label))  # fake labels are real for generator cost
-            output = discr(fake_and_cond.detach())
-            errG = criterion(output, labelv)# + ((fake - inputv)**2).mean()
+            output = discr(fake)
+            errG = criterion(output, labelv)  + ((fake - inputv)**2).mean()
             errG.backward()
             D_G_z2 = output.data.mean()
             gen_opt.step()
@@ -254,22 +293,92 @@ def train():
                 x = 0.5 * (X + 1) if act == 'tanh' else X
                 f = 0.5 * (fake.data + 1) if act == 'tanh' else fake.data
                 vutils.save_image(x, '{}/real_samples.png'.format(folder), normalize=True)
-                fake = gen(fixed_noise)
+                #fake = gen(fixed_noise)
                 vutils.save_image(f, '{}/fake_samples_epoch_{:03d}.png'.format(folder, epoch), normalize=True)
                 torch.save(gen, '{}/gen.th'.format(folder))
                 torch.save(discr, '{}/discr.th'.format(folder))
                 gen.apply(save_weights)
 
-
-def gen():
-    gen_orig = torch.load('out/gen.th')
-    gen = torch.load('out/gen.th')
-    discr = torch.load('out/discr.th')
+def collect():
     batch_size = 64
-    nz = 100
+    exists = set()
+    dataset_name = 'fonts'
+    dataset = _load_dataset(dataset_name, split='full')
+    dataloader = torch.utils.data.DataLoader(
+        dataset, 
+        batch_size=batch_size,
+        shuffle=True, 
+        num_workers=1
+    )
+    clf = torch.load('out/clf.th')
+    for X, y in dataloader:
+        X = Variable(X).cuda()
+        _, h = clf(X)
+        h = (h > 0.5).float()
+        h = h.data.cpu().numpy().tolist()
+        for hi in h:
+            hi = tuple(hi)
+            exists.add(hi)
+    exists = list(exists)
+    exists = np.array(exists)
+    np.savez('out/bin.npz', X=exists)
+
+
+def gen(*, way='out_of_distrib'):
+    batch_size = 64
+    nz = 20
+    cond = 100
+    folder = 'out'
+    dataset_name = 'fonts'
+    dataset = _load_dataset(dataset_name, split='test')
+    dataloader = torch.utils.data.DataLoader(
+        dataset, 
+        batch_size=batch_size,
+        shuffle=True, 
+        num_workers=1
+    )
+    bin  = np.load('out/bin.npz')['X']
+    exists = set()
+    for b in bin:
+        b = b.astype('bool')
+        b = tuple(b)
+        exists.add(b)
+
+    gen = torch.load('out/gen.th')
+    clf = torch.load('out/clf.th')
+
     folder = 'out'
     noise = torch.FloatTensor(batch_size, nz, 1, 1).normal_(0, 1).cuda()
     noise = Variable(noise)
+    
+    for X, y in dataloader:
+        if way == 'out_of_distrib':
+            X = Variable(X).cuda()
+            _, h = clf(X)
+            h = (h > 0.5).float()
+        elif way == 'out_of_code':
+            h_list = []
+            while len(h_list) < batch_size:
+                h = (np.random.uniform(size=cond)<=(0.5)).tolist()
+                h = tuple(h)
+                if h in exists:
+                    continue
+                h_list.append(h)
+            h = np.array(h_list).astype('float32')
+            h = torch.from_numpy(h)
+            h = Variable(h).cuda()
+        noise_and_cond = torch.cat((noise, h), 1)
+        fake = gen(noise_and_cond)
+
+        if way == 'out_of_distrib':
+            vutils.save_image(fake.data, 'out/check_fake_samples.png', normalize=True)
+            vutils.save_image(X.data, 'out/check_true_samples.png', normalize=True)
+        elif way == 'out_of_code':
+            vutils.save_image(fake.data, 'out/check_new_samples.png', normalize=True)
+        break 
+
+def hamming(x, y):
+    return sum(abs(xi-yi) for xi, yi in zip(x, y))
 
 if __name__ == '__main__':
-    run([train, gen, clf])
+    run([train, gen, clf, collect, ae])

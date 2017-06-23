@@ -35,66 +35,6 @@ class Gen(nn.Module):
         return out
 
 
-class SparseGen(nn.Module):
-    def __init__(self, nz=100, ngf=64, nc=1):
-        super().__init__()
-        self.layer1 = nn.Sequential(
-            nn.ConvTranspose2d(     nz, ngf * 8, 2, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
-        )
-        self.layer2 = nn.Sequential(
-            nn.ConvTranspose2d(ngf * 8, ngf * 4, 2, 2, 0, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
-        )
-        self.layer3 = nn.Sequential(
-            nn.ConvTranspose2d(ngf * 4, ngf * 2, 2, 2, 0, bias=False),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
-        ) 
-        self.layer1_out  = nn.Sequential(    
-            nn.ConvTranspose2d(    ngf*8,      nc, 16, 16, 0, bias=False),
-            nn.Tanh()
-        )
-        self.layer1_out.name = 'layer1'
-        self.layer2_out  = nn.Sequential(    
-            nn.ConvTranspose2d(    ngf*4,      nc, 8, 8, 0, bias=False),
-            nn.Tanh()
-        )
-        self.layer2_out.name = 'layer2'
-        self.layer3_out  = nn.Sequential(    
-            nn.ConvTranspose2d(    ngf*2,      nc, 4, 4, 0, bias=False),
-            nn.Tanh()
-        )
-        self.layer3_out.name = 'layer3'
-        self.apply(weights_init)
-
-    def forward(self, input):
-        x1 = self.layer1(input)
-        x2 = self.layer2(x1)
-        x3 = self.layer3(x2)
-        #x1t = spatial_sparsity(x1)
-        #x2t = spatial_sparsity(x2)
-        #x3t = spatial_sparsity(x3)
-        x1t = x1
-        x2t = x2
-        x3t = x3
-        o1 = self.layer1_out(x1t)
-        o2 = self.layer2_out(x2t)
-        o3 = self.layer3_out(x3t)
-        o = 1/3.*(o1+o2+o3)
-        return o
-
-def spatial_sparsity(x):
-    xf = x.view(x.size(0), x.size(1), -1)
-    m, _ = xf.max(2)
-    m = m.repeat(1, 1, xf.size(2))
-    xf = xf * (xf==m).float()
-    xf = xf.view(x.size())
-    return xf
-
-
 class Discr(nn.Module):
 
     def __init__(self, nc=1, ndf=64, act='sigmoid', no=1):
@@ -138,6 +78,7 @@ class Clf(nn.Module):
         self.ndf = ndf
         self.main = nn.Sequential(
             nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf),
             nn.LeakyReLU(0.2, inplace=True),
             
             nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
@@ -154,11 +95,11 @@ class Clf(nn.Module):
             
         )
         self.fc = nn.Sequential(
-            nn.Linear(ndf * 8 * 4 * 4, 20),
+            nn.Linear(ndf * 8 * 4 * 4, 100),
             nn.Sigmoid(),
         )
         self.out = nn.Sequential(
-            nn.Linear(20, no)
+            nn.Linear(100, no)
         )
         self.apply(weights_init)
 
@@ -168,6 +109,61 @@ class Clf(nn.Module):
         h = self.fc(out)
         out = self.out(h)
         return out, h
+
+class AE(nn.Module):
+
+    def __init__(self, nc=1, ndf=64, act='sigmoid'):
+        super().__init__()
+        self.act = act
+        self.ndf = ndf
+        self.encode = nn.Sequential(
+            nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 8),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.decode = nn.Sequential(
+            nn.ConvTranspose2d(ndf * 8, ndf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 4),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(ndf * 4, ndf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 2),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(ndf * 2, ndf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(    ndf,      nc, 4, 2, 1, bias=False),
+        )
+        self.latent = nn.Sequential(
+            nn.Linear(ndf * 8 * 4 * 4, 100),
+            nn.Sigmoid(),
+        )
+        self.post_latent = nn.Sequential(
+            nn.Linear(100, ndf * 8 * 4 * 4)
+        )
+        self.apply(weights_init)
+
+    def forward(self, input):
+        x = self.encode(input)
+        x = x.view(x.size(0), self.ndf * 8 * 4 * 4)
+        h = self.latent(x)
+        h = self.post_latent(h)
+        h = h.view(h.size(0), self.ndf * 8, 4, 4)
+        xrec = self.decode(h)
+        return xrec, h
 
 
 def weights_init(m):
