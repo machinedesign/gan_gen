@@ -1,9 +1,12 @@
-import math
 from clize import run
+from functools import partial
+import time
+import math
 from skimage.io import imsave
 import numpy as np
 import os
 import random
+
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
@@ -20,22 +23,27 @@ from model import AE
 from model import Discr
 from model import Clf
 
-def save_weights(m):
+from utils import Invert
+from utils import Gray
+from utils import grid_embedding 
+
+
+def save_weights(m, folder='out'):
     if isinstance(m, nn.Linear):
         w = m.weight.data
         if w.size(1) == 28*28:
             w = w.view(w.size(0), 1, 28, 28)
             gr = grid_of_images_default(np.array(w.tolist()), normalize=True)
-            imsave('out/feat.png', gr)
+            imsave('{}/feat.png'.format(folder), gr)
     elif isinstance(m, nn.ConvTranspose2d):
         w = m.weight.data
         if w.size(1) == 1:
             w = w.view(w.size(0) * w.size(1), w.size(2), w.size(3))
             gr = grid_of_images_default(np.array(w.tolist()), normalize=True)
-            imsave('out/feat_{}.png'.format(w.size(0)), gr)
+            imsave('{}/feat_{}.png'.format(folder, w.size(0)), gr)
         elif w.size(1) == 3:
             gr = grid_of_images_default(np.array(w.tolist()), normalize=True)
-            imsave('out/feat_{}.png'.format(w.size(0)), gr)
+            imsave('{}/feat_{}.png'.format(folder, w.size(0)), gr)
 
 
 def _load_dataset(dataset_name, split='full'):
@@ -59,6 +67,16 @@ def _load_dataset(dataset_name, split='full'):
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
          ]))
         return dataset
+    elif dataset_name == 'celeba':
+        dataset = dset.ImageFolder(root='/home/mcherti/work/data/celeba',
+            transform=transforms.Compose([
+            transforms.Scale(64),
+            transforms.CenterCrop(64),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+         ]))
+        return dataset
+
     elif dataset_name == 'fonts':
         dataset = dset.ImageFolder(root='/home/mcherti/work/data/fonts/'+split,
             transform=transforms.Compose([
@@ -70,22 +88,11 @@ def _load_dataset(dataset_name, split='full'):
     else:
         raise ValueError('Error')
 
-class Invert:
 
-    def __call__(self, x):
-        return 1 - x
-
-
-class Gray:
-
-    def __call__(self, x):
-        return x[0:1]
-
-def ae():
+def ae(*, folder='out', dataset='celeba'):
     lr = 1e-4
     batch_size = 64
-    dataset_name = 'fonts'
-    train = _load_dataset(dataset_name, split='train')
+    train = _load_dataset(dataset, split='train')
     trainl = torch.utils.data.DataLoader(
         train, 
         batch_size=batch_size,
@@ -94,12 +101,13 @@ def ae():
     )
     x0, _ = train[0]
     nc = x0.size(0)
-    ae = AE(nc=nc)
+    ae = AE(nc=nc, latent_size=100)
     ae = ae.cuda()
     opt = optim.Adam(ae.parameters(), lr=lr, betas=(0.5, 0.999))
-    nb_epochs = 40
+    nb_epochs = 100
     avg_loss = 0.
     nb_updates = 0
+    t0 = time.time()
     for epoch in range(nb_epochs):
         for X, _ in trainl:
             X = Variable(X).cuda()
@@ -107,23 +115,30 @@ def ae():
             Xrec, h = ae(X)
             e1 = ((X - Xrec)**2).mean()
             e2 = -((h  - 0.5) ** 2).sum(1).mean()
-            e3 = torch.abs(h.mean(1) - 0.5).sum()
-            loss = e1 + 0.05*(e2 + e3)
+            e3 = torch.abs(h.mean(0) - 0.5).sum()
+            loss = e1 + 0.001*(e2 + e3)
             loss.backward()
             opt.step()
             avg_loss = avg_loss * 0.9 + loss.data[0] * 0.1
-            nb_updates += 1
             if nb_updates % 100 == 0:
-                print('Epoch {:03d}/{:03d}, Avg loss : {:.3f}'.format(epoch + 1, nb_epochs, avg_loss))
+                dt = time.time() - t0
+                t0 = time.time()
+                print('Epoch {:03d}/{:03d}, Avg loss : {:.6f}, dt : {:.6f}(s)'.format(epoch + 1, nb_epochs, avg_loss, dt))
+                im = Xrec.data.cpu().numpy()
+                im = grid_of_images_default(im)
+                imsave('{}/ae.png'.format(folder), im)
+                print(e1.data[0], e2.data[0], e3.data[0])
+
+            if nb_updates % 1000 == 0:
                 print(h.data)
-        torch.save(ae, 'out/ae.th')
+            nb_updates += 1
+        torch.save(ae, '{}/ae.th'.format(folder))
 
 
-def clf():
+def clf(*, folder='out', dataset='celeba'):
     lr = 1e-4
     batch_size = 64
-    dataset_name = 'fonts' 
-    train = _load_dataset(dataset_name, split='train')
+    train = _load_dataset(dataset, split='train')
     trainl = torch.utils.data.DataLoader(
         train, 
         batch_size=batch_size,
@@ -174,32 +189,33 @@ def clf():
         valid_acc = np.mean(accs)
         if valid_acc > max_valid_acc:
             max_valid_acc = valid_acc
-            torch.save(discr, 'out/clf.th')
+            torch.save(discr, '{}/clf.th'.format(folder))
         print(h.data[0])
         print('Epoch {:03d}/{:03d}, Avg acc train : {:.3f}, Acc valid : {:.3f}'.format(epoch + 1, nb_epochs, avg_acc, valid_acc))
 
 
-def train():
+def train(*, folder='out', dataset='celeba'):
     lr = 0.0002
-    cond = 100
+    nz = 0
     batch_size = 64
-    nz = 20 
-    nb_epochs = 100
-    folder = 'out'
-    dataset_name = 'fonts' 
+    nb_epochs = 300
     wasserstein = True
-    dataset = _load_dataset(dataset_name, split='train')
+    dataset = _load_dataset(dataset, split='train')
     x0, _ = dataset[0]
     nc = x0.size(0)
     w = x0.size(1)
     h = x0.size(2)
-
+    _save_weights = partial(save_weights, folder=folder)
     dataloader = torch.utils.data.DataLoader(
         dataset, 
         batch_size=batch_size,
         shuffle=True, 
         num_workers=1
     )
+
+    encoder = torch.load('{}/ae.th'.format(folder))
+    cond = encoder.post_latent[0].weight.size(1)
+
     act = 'sigmoid' if nc==1 else 'tanh'
     gen = Gen(nz=nz + cond, nc=nc, act=act)
     discr = Discr(nc=nc, act='' if wasserstein else 'sigmoid')
@@ -221,8 +237,7 @@ def train():
         fake_label = 0
         criterion = nn.BCELoss()
 
-    clf = torch.load('out/clf.th')
-    clf = clf.cuda()
+    encoder = encoder.cuda()
 
     gen = gen.cuda()
     discr =  discr.cuda()
@@ -245,10 +260,11 @@ def train():
             label.resize_(batch_size).fill_(real_label)
             inputv = Variable(input)
             labelv = Variable(label)
-            _, h = clf(inputv)
+            _, h = encoder(inputv)
             h = h.view(h.size(0), h.size(1), 1, 1)
             h = h.repeat(1, 1, inputv.size(2), inputv.size(3))
             h = (h > 0.5).float()
+            print(h)
             #inputv_and_cond = torch.cat((inputv, h), 1)
             inputv_and_cond = inputv
             output = discr(inputv_and_cond)
@@ -256,11 +272,14 @@ def train():
             errD_real.backward()
             D_x = output.data.mean()
             
-            noise.resize_(batch_size, nz, 1, 1).normal_(0, 1)
-            noisev = Variable(noise)
+            if nz > 0:
+                noise.resize_(batch_size, nz, 1, 1).normal_(0, 1)
+                noisev = Variable(noise)
 
-            if cond == 0:
+            if cond == 0 and nz > 0:
                 noise_and_cond = noisev
+            elif cond > 0 and nz == 0:
+                noise_and_cond = h[:, :, 0:1, 0:1]
             else:
                 noise_and_cond = torch.cat((noisev, h[:, :, 0:1, 0:1]), 1)
             fake = gen(noise_and_cond)
@@ -297,23 +316,23 @@ def train():
                 vutils.save_image(f, '{}/fake_samples_epoch_{:03d}.png'.format(folder, epoch), normalize=True)
                 torch.save(gen, '{}/gen.th'.format(folder))
                 torch.save(discr, '{}/discr.th'.format(folder))
-                gen.apply(save_weights)
+                gen.apply(_save_weights)
 
-def collect():
+
+def extract_codes(*, folder='out', dataset='celeba'):
     batch_size = 64
     exists = set()
-    dataset_name = 'fonts'
-    dataset = _load_dataset(dataset_name, split='full')
+    dataset = _load_dataset(dataset, split='full')
     dataloader = torch.utils.data.DataLoader(
         dataset, 
         batch_size=batch_size,
         shuffle=True, 
         num_workers=1
     )
-    clf = torch.load('out/clf.th')
+    encoder = torch.load('{}/ae.th'.format(folder))
     for X, y in dataloader:
         X = Variable(X).cuda()
-        _, h = clf(X)
+        _, h = encoder(X)
         h = (h > 0.5).float()
         h = h.data.cpu().numpy().tolist()
         for hi in h:
@@ -321,64 +340,99 @@ def collect():
             exists.add(hi)
     exists = list(exists)
     exists = np.array(exists)
-    np.savez('out/bin.npz', X=exists)
+    print('Size of dataset : {}, Nb of unique codes : {}'.format(len(dataloader), len(exists)))
+    np.savez('{}/bin.npz'.format(folder), X=exists)
 
 
-def gen(*, way='out_of_distrib'):
-    batch_size = 64
-    nz = 20
-    cond = 100
-    folder = 'out'
-    dataset_name = 'fonts'
-    dataset = _load_dataset(dataset_name, split='test')
+def gen(*, folder='out', dataset='celeba', way='out_of_distrib'):
+    from sklearn.neighbors import BallTree
+    from sklearn.manifold import TSNE
+
+    batch_size = 900
+    nz = 0
+    dataset = _load_dataset(dataset, split='test')
     dataloader = torch.utils.data.DataLoader(
         dataset, 
         batch_size=batch_size,
         shuffle=True, 
         num_workers=1
     )
-    bin  = np.load('out/bin.npz')['X']
+    bin  = np.load('{}/bin.npz'.format(folder))
+    bin = bin['X']
+    tree = BallTree(bin, metric='hamming')
+
     exists = set()
     for b in bin:
         b = b.astype('bool')
         b = tuple(b)
         exists.add(b)
 
-    gen = torch.load('out/gen.th')
-    clf = torch.load('out/clf.th')
+    gen = torch.load('{}/gen.th'.format(folder))
+    encoder = torch.load('{}/ae.th'.format(folder))
+    cond = encoder.post_latent[0].weight.size(1)
 
-    folder = 'out'
     noise = torch.FloatTensor(batch_size, nz, 1, 1).normal_(0, 1).cuda()
     noise = Variable(noise)
+    X, y = next(iter(dataloader))
+    if way == 'out_of_distrib':
+        X = Variable(X).cuda()
+        _, h = encoder(X)
+        h = (h > 0.5).float()
+        sne = TSNE()
+        h = h.data.cpu().numpy()
+        h2d = sne.fit_transform(h)
+        rows = grid_embedding(h2d)
+        h = h[rows]
+        h = torch.from_numpy(h)
+        h = Variable(h).cuda()
+    elif way == 'out_of_code':
+        h_list = []
+        while len(h_list) < batch_size:
+            h = (np.random.uniform(size=cond)<=(0.5)).tolist()
+            h = tuple(h)
+            if h in exists:
+                continue
+            h_list.append(h)
+        h = np.array(h_list).astype('float32')
+        sne = TSNE()
+        h2d = sne.fit_transform(h)
+        rows = grid_embedding(h2d)
+        h = h[rows]
+        h = torch.from_numpy(h)
+        h = Variable(h).cuda()
+    else:
+        raise ValueError(way)
+
+    if nz == 0:
+        noise_and_cond = h.view(h.size(0), h.size(1), 1, 1)
+    else:
+        noise_and_cond = torch.cat((noise, h.view(h.size(0), h.size(1), 1, 1)), 1)
+    fake = gen(noise_and_cond)
+    if way == 'out_of_distrib':
+        im = fake.data.cpu().numpy()
+        sne = TSNE()
+        h2d = sne.fit_transform(im.reshape((im.shape[0], -1)))
+        rows = grid_embedding(h2d)
+        
+        im = im[rows]
+        im = grid_of_images_default(im, normalize=True)
     
-    for X, y in dataloader:
-        if way == 'out_of_distrib':
-            X = Variable(X).cuda()
-            _, h = clf(X)
-            h = (h > 0.5).float()
-        elif way == 'out_of_code':
-            h_list = []
-            while len(h_list) < batch_size:
-                h = (np.random.uniform(size=cond)<=(0.5)).tolist()
-                h = tuple(h)
-                if h in exists:
-                    continue
-                h_list.append(h)
-            h = np.array(h_list).astype('float32')
-            h = torch.from_numpy(h)
-            h = Variable(h).cuda()
-        noise_and_cond = torch.cat((noise, h), 1)
-        fake = gen(noise_and_cond)
+        imsave('{}/check_fake_samples.png'.format(folder), im)
 
-        if way == 'out_of_distrib':
-            vutils.save_image(fake.data, 'out/check_fake_samples.png', normalize=True)
-            vutils.save_image(X.data, 'out/check_true_samples.png', normalize=True)
-        elif way == 'out_of_code':
-            vutils.save_image(fake.data, 'out/check_new_samples.png', normalize=True)
-        break 
+        im = X.data.cpu().numpy()
+        im = im[rows]
+        im = grid_of_images_default(im, normalize=True)
+        imsave('{}/check_true_samples.png'.format(folder), im)
 
-def hamming(x, y):
-    return sum(abs(xi-yi) for xi, yi in zip(x, y))
+    elif way == 'out_of_code':
+        im = fake.data.cpu().numpy()
+        sne = TSNE()
+        h2d = sne.fit_transform(im.reshape((im.shape[0], -1)))
+        rows = grid_embedding(h2d)
+        im = im[rows]
+        im = grid_of_images_default(im, normalize=True)
+        imsave('{}/check_new_samples.png'.format(folder), im)
+
 
 if __name__ == '__main__':
-    run([train, gen, clf, collect, ae])
+    run([train, gen, clf, extract_codes, ae])

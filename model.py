@@ -112,7 +112,7 @@ class Clf(nn.Module):
 
 class AE(nn.Module):
 
-    def __init__(self, nc=1, ndf=64, act='sigmoid'):
+    def __init__(self, nc=1, ndf=64, act='sigmoid', latent_size=256):
         super().__init__()
         self.act = act
         self.ndf = ndf
@@ -148,11 +148,11 @@ class AE(nn.Module):
             nn.ConvTranspose2d(    ndf,      nc, 4, 2, 1, bias=False),
         )
         self.latent = nn.Sequential(
-            nn.Linear(ndf * 8 * 4 * 4, 100),
+            nn.Linear(ndf * 8 * 4 * 4, latent_size),
             nn.Sigmoid(),
         )
         self.post_latent = nn.Sequential(
-            nn.Linear(100, ndf * 8 * 4 * 4)
+            nn.Linear(latent_size, ndf * 8 * 4 * 4)
         )
         self.apply(weights_init)
 
@@ -160,9 +160,9 @@ class AE(nn.Module):
         x = self.encode(input)
         x = x.view(x.size(0), self.ndf * 8 * 4 * 4)
         h = self.latent(x)
-        h = self.post_latent(h)
-        h = h.view(h.size(0), self.ndf * 8, 4, 4)
-        xrec = self.decode(h)
+        x = self.post_latent(h)
+        x = x.view(x.size(0), self.ndf * 8, 4, 4)
+        xrec = self.decode(x)
         return xrec, h
 
 
