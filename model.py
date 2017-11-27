@@ -38,6 +38,114 @@ class Gen(nn.Module):
         return out
 
 
+class PPGen(nn.Module):
+    def __init__(self, nz=4096, act='tanh'):
+        super().__init__()
+        self.act = act
+        self.fc = nn.Sequential(
+            nn.Linear(nz,  4096), #defc7
+            nn.BatchNorm1d(4096),
+            nn.LeakyReLU(0.3),
+            nn.Linear(4096, 4096), #defc6
+            nn.BatchNorm1d(4096),
+            nn.LeakyReLU(0.3),
+            nn.Linear(4096, 4096), #defc5
+            nn.BatchNorm1d(4096),
+            nn.LeakyReLU(0.3),
+        )
+        self.conv = nn.Sequential(
+            nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False), #deconv5
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.3),
+            nn.Conv2d(256, 512, 3, 1, 1, bias=False), #conv5_1
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.3),
+
+            nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False), #decon4
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.3),
+            nn.Conv2d(256, 256, 3, 1, 1, bias=False), #conv4_1
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.3),
+            
+            nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False), #deconv3
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.3),
+            nn.Conv2d(128, 128, 3, 1, 1, bias=False), #conv3_1
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.3),
+         
+            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False), #deconv2
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.3),
+
+            nn.ConvTranspose2d(64, 32, 4, 2, 1, bias=False), #deconv1
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(0.3),
+            
+            nn.ConvTranspose2d(32, 3, 4, 2, 1, bias=False), #deconv0
+        )
+        self.apply(weights_init)
+
+    def forward(self, input):
+        x = input.view(input.size(0), input.size(1))
+        x = self.fc(x)
+        x = x.view(x.size(0), 256, 4, 4)
+        x = self.conv(x)
+        if self.act == 'tanh':
+            x = nn.Tanh()(x)
+        elif self.act == 'sigmoid':
+            x = nn.Sigmoid()(x)
+        return x
+
+
+class PPDiscr(nn.Module):
+
+    def __init__(self, act='sigmoid'):
+        super().__init__()
+        self.act = act
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.BatchNorm2d(192),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.BatchNorm2d(384),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(256 * 7 * 7, 4096),
+            nn.BatchNorm1d(4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, 4096),
+            nn.BatchNorm1d(4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, 1),
+        )
+        self.apply(weights_init)
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), 256 * 7 * 7)
+        x = self.classifier(x)
+        if self.act == 'tanh':
+            x = nn.Tanh()(x)
+        elif self.act == 'sigmoid':
+            x = nn.Sigmoid()(x)
+        return x[:, 0]
+
+
 class Discr(nn.Module):
 
     def __init__(self, nc=1, ndf=64, act='sigmoid', no=1, w=64):
@@ -93,7 +201,8 @@ class Pretrained(nn.Module):
         self.clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
 
     def forward(self, input):
-        input = norm(input, self.clf_mean, self.clf_std)
+        if input.size(1) == 3:
+            input = norm(input, self.clf_mean, self.clf_std)
         x = input
         h = self.features(x)
         h = h.detach()
@@ -105,12 +214,44 @@ class Pretrained(nn.Module):
         return (htrue, hrec), hbin
 
 
+class PretrainedFrozen(nn.Module):
+
+    def __init__(self, features, classifier, h_size=4096):
+        super().__init__()
+        self.features = features
+        self.classifier = classifier
+        self.latent_size = h_size
+        self.h_size = h_size
+        self.encode = nn.Sequential()
+        self.decode = nn.Sequential()
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+        self.clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
+        self.clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+
+    def forward(self, input):
+        input = norm(input, self.clf_mean, self.clf_std)
+        x = input
+        x = x[:, :, 16:-16, 16:-16]
+        h = self.features(x)
+        h = h.detach()
+        h = h.view(h.size(0), -1)
+        h = self.classifier[0](h)
+        h = self.classifier[1](h)
+        h = self.classifier[2](h)
+        htrue = h
+        h = self.encode(h)
+        hbin = h
+        hrec = self.decode(h)
+        return (htrue, hrec), hbin
+
+
+
 def norm(x, m, s):
     x = (x + 1) / 2.
     x = x - m.repeat(x.size(0), 1, x.size(2), x.size(3))
     x = x / s.repeat(x.size(0), 1, x.size(2), x.size(3))
     return x
-
 
 
 class Clf(nn.Module):
@@ -139,11 +280,11 @@ class Clf(nn.Module):
             
         )
         self.fc = nn.Sequential(
-            nn.Linear(ndf * 8 * 4 * 4, 100),
-            nn.Sigmoid(),
+            nn.Linear(ndf * 8 * 4 * 4, 512),
+            nn.LeakyReLU(0.2, inplace=True),
         )
         self.out = nn.Sequential(
-            nn.Linear(100, no)
+            nn.Linear(512, no)
         )
         self.apply(weights_init)
 
@@ -157,11 +298,12 @@ class Clf(nn.Module):
 
 class AE(nn.Module):
 
-    def __init__(self, nc=1, ndf=64, act='sigmoid', latent_size=256, w=64):
+    def __init__(self, nc=1, ndf=64, act='sigmoid', latent_size=256, w=64, round=False):
         super().__init__()
         self.latent_size = latent_size
         self.act = act
         self.ndf = ndf
+        self.round = round
 
         nb_blocks = int(np.log(w)/np.log(2)) - 3
         nf = ndf 
@@ -206,6 +348,8 @@ class AE(nn.Module):
         pre_latent_size = x.size()
         x = x.view(x.size(0), -1)
         h = self.latent(x)
+        if self.round:
+            h = h.round()
         x = self.post_latent(h)
         x = x.view(pre_latent_size)
         xrec = self.decode(x)

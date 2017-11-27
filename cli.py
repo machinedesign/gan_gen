@@ -1,28 +1,24 @@
+import matplotlib as mpl
+mpl.use('Agg')
+import matplotlib.pyplot as plt
 from functools import partial
 from itertools import chain
 import time
-import math
 import numpy as np
 import os
-import random
 from clize import run
 
 from sklearn.manifold import TSNE
+from sklearn.neighbors import BallTree
 
 from skimage.io import imsave
-from skimage.transform import resize
 
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
 import torch.optim as optim
-import torchvision.datasets as dset
-import torchvision.transforms as transforms
-from torch.autograd import Variable
-from torch.utils.data import TensorDataset
 import torchvision.utils as vutils
 from torchvision.models import alexnet
-
 from machinedesign.viz import grid_of_images_default
 
 from model import Gen
@@ -30,11 +26,14 @@ from model import AE
 from model import Discr
 from model import Clf
 from model import Pretrained
+from model import PretrainedFrozen
+from model import PPGen
+from model import PPDiscr
+from model import norm
 
-from utils import Invert
-from utils import Gray
 from utils import grid_embedding 
 
+from data import load_dataset
 
 def save_weights(m, folder='out', prefix=''):
     if isinstance(m, nn.Linear):
@@ -55,79 +54,10 @@ def save_weights(m, folder='out', prefix=''):
             imsave('{}/{}_feat_{}.png'.format(folder, prefix, w.size(0)), gr)
 
 
-def _load_dataset(dataset_name, split='full'):
-    if dataset_name == 'mnist':
-        dataset = dset.MNIST(
-            root='/home/mcherti/work/data/mnist', 
-            download=True,
-            transform=transforms.Compose([
-                transforms.Scale(32),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5,), (0.5,)),
-            ])
-        )
-        return dataset
-    if dataset_name == 'quickdraw':
-        X = (np.load('/home/mcherti/work/data/quickdraw/teapot.npy'))
-        X = X.reshape((X.shape[0], 28, 28))
-        X  = X / 255.
-        X = X.astype(np.float32)
-        X = torch.from_numpy(X)
-        dataset = TensorDataset(X, X)
-        return dataset
-    elif dataset_name == 'shoes':
-        dataset = dset.ImageFolder(root='/home/mcherti/work/data/shoes/ut-zap50k-images/Shoes',
-            transform=transforms.Compose([
-            transforms.Scale(64),
-            transforms.CenterCrop(64),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-         ]))
-        return dataset
-    elif dataset_name == 'celeba':
-        dataset = dset.ImageFolder(root='/home/mcherti/work/data/celeba',
-            transform=transforms.Compose([
-            transforms.Scale(64),
-            transforms.CenterCrop(64),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-         ]))
-        return dataset
-    elif dataset_name == 'birds':
-        dataset = dset.ImageFolder(root='/home/mcherti/work/data/birds/'+split,
-            transform=transforms.Compose([
-            transforms.Scale(64),
-            transforms.CenterCrop(64),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-         ]))
-        return dataset
-    elif dataset_name == 'sketchy':
-        dataset = dset.ImageFolder(root='/home/mcherti/work/data/sketchy/'+split,
-            transform=transforms.Compose([
-            transforms.Scale(64),
-            transforms.CenterCrop(64),
-            transforms.ToTensor(),
-            Gray()
-         ]))
-        return dataset
- 
-    elif dataset_name == 'fonts':
-        dataset = dset.ImageFolder(root='/home/mcherti/work/data/fonts/'+split,
-            transform=transforms.Compose([
-            transforms.ToTensor(),
-            Invert(),
-            Gray(),
-         ]))
-        return dataset
-    else:
-        raise ValueError('Error')
-
-
-def ae(*, folder='out', dataset='celeba', latent_size=100):
+def ae(*, folder='out', dataset='celeba', latent_size=100, round=False):
     lr = 1e-4
     batch_size = 64
-    train = _load_dataset(dataset, split='train')
+    train = load_dataset(dataset, split='train')
     _save_weights = partial(save_weights, folder=folder, prefix='ae')
     trainl = torch.utils.data.DataLoader(
         train, 
@@ -138,7 +68,7 @@ def ae(*, folder='out', dataset='celeba', latent_size=100):
     x0, _ = train[0]
     nc = x0.size(0)
     width = x0.size(2)
-    ae = AE(nc=nc, latent_size=latent_size, w=width)
+    ae = AE(nc=nc, latent_size=latent_size, w=width, round=round)
     ae = ae.cuda()
     opt = optim.Adam(ae.parameters(), lr=lr, betas=(0.5, 0.999))
     nb_epochs = 200
@@ -156,20 +86,19 @@ def ae(*, folder='out', dataset='celeba', latent_size=100):
             e1 = ((X - Xrec)**2).mean()
             e2 = -((h  - 0.5) ** 2).sum(1).mean()
             e3 = torch.abs(h.mean(0) - 0.5).sum()
-            loss = e1 + 0.001*(e2 + e3)
+            loss = e1
             loss.backward()
             opt.step()
             avg_loss = avg_loss * 0.9 + loss.data[0] * 0.1
             avg_e1 = avg_e1 * 0.9 + e1.data[0] * 0.1
             avg_e2 = avg_e2 * 0.9 + e2.data[0] * 0.1
             avg_e3 = avg_e3 * 0.9 + e3.data[0] * 0.1
-
             if nb_updates % 100 == 0:
                 dt = time.time() - t0
                 t0 = time.time()
                 print('Epoch {:03d}/{:03d}, Avg loss : {:.6f}, Avg e1 : {:.6f}, Avg e2 : {:.6f}, Avg e3 : {:.6f}, dt : {:.6f}(s)'.format(epoch + 1, nb_epochs, avg_loss, avg_e1, avg_e2, avg_e3, dt))
                 im = Xrec.data.cpu().numpy()
-                im = grid_of_images_default(im)
+                im = grid_of_images_default(im, normalize=True)
                 imsave('{}/ae.png'.format(folder), im)
                 ae.apply(_save_weights)
 
@@ -179,21 +108,33 @@ def ae(*, folder='out', dataset='celeba', latent_size=100):
         torch.save(ae, '{}/ae.th'.format(folder))
 
 
-def pretrained(*, folder='out', dataset='celeba', latent_size=200):
+def pretrained_frozen(*, folder='out', h_size=4096):
+    clf = alexnet(pretrained=True)
+    clf = clf.cuda()
+    clf = PretrainedFrozen(features=clf.features, classifier=clf.classifier, h_size=h_size)
+    torch.save(clf, os.path.join(folder, 'ae.th'))
+
+
+def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='binary', h_size=256, classifier='alexnet'):
     lr = 1e-4
     batch_size = 64
     nb_epochs = 200
 
-    train = _load_dataset(dataset, split='train')
+    train = load_dataset(dataset, split='train')
     trainl = torch.utils.data.DataLoader(
         train, 
         batch_size=batch_size,
         shuffle=True, 
         num_workers=1
     )
-    clf = alexnet(pretrained=True)
-    clf = clf.cuda()
-    fe = Pretrained(clf.features)
+    if classifier == 'alexnet':
+        clf = alexnet(pretrained=True)
+        clf = clf.cuda()
+    else:
+        clf = torch.load(classifier)
+        clf = clf.cuda()
+    features = clf.features if hasattr(clf, 'features') else clf.main
+    fe = Pretrained(features, latent_size=latent_size, h_size=h_size)
     fe = fe.cuda()
     opt = optim.Adam(chain(fe.encode.parameters(), fe.decode.parameters()), lr=lr, betas=(0.5, 0.999))
     t0 = time.time()
@@ -207,13 +148,23 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200):
             X = Variable(X).cuda()
             (htrue, hrec), hbin = fe(X)
             fe.zero_grad()
-            e1 = ((htrue - hrec)**2).mean()
-            e2 = -((hbin  - 0.5) ** 2).sum(1).mean()
-            e3 = torch.abs(hbin.mean(0) - 0.5).sum()
-            loss = e1 + 0.005*(e2 + e3)
+            if constraint == 'binary':
+                e1 = ((htrue - hrec)**2).mean()
+                e2 = -((hbin  - 0.5) ** 2).sum(1).mean()
+                e3 = torch.abs(hbin.mean(0) - 0.5).sum()
+                loss = e1 + 0.01 * (e2 + e3)
+            elif constraint == 'binary_sparse':
+                e1 = ((htrue - hrec)**2).mean()
+                e2 = -((hbin  - 0.5) ** 2).sum(1).mean()
+                e3 = torch.abs(hbin.mean(0)).sum()
+                loss = e1 + 0.001 * (e2 + e3)
+            elif constraint == '':
+                e1 = ((htrue - hrec)**2).mean()
+                e2 = e1
+                e3 = e1
+                loss = e1
             loss.backward()
             opt.step()
-
             avg_loss = avg_loss * 0.9 + loss.data[0] * 0.1
             avg_e1 = avg_e1 * 0.9 + e1.data[0] * 0.1
             avg_e2 = avg_e2 * 0.9 + e2.data[0] * 0.1
@@ -228,17 +179,17 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200):
         torch.save(fe, '{}/ae.th'.format(folder))
 
 
-def clf(*, folder='out', dataset='celeba'):
+def clf(*, folder='out', dataset='celeba', no=26):
     lr = 1e-4
     batch_size = 64
-    train = _load_dataset(dataset, split='train')
+    train = load_dataset(dataset, split='train')
     trainl = torch.utils.data.DataLoader(
         train, 
         batch_size=batch_size,
         shuffle=True, 
         num_workers=1
     )
-    valid = _load_dataset(dataset_name, split='valid')
+    valid = load_dataset(dataset, split='valid')
     validl = torch.utils.data.DataLoader(
         valid, 
         batch_size=batch_size,
@@ -248,7 +199,6 @@ def clf(*, folder='out', dataset='celeba'):
 
     x0, _ = train[0]
     nc = x0.size(0)
-    no = 26
     discr = Clf(nc=nc, no=no)
     discr = discr.cuda()
     opt = optim.Adam(discr.parameters(), lr=lr, betas=(0.5, 0.999))
@@ -262,11 +212,8 @@ def clf(*, folder='out', dataset='celeba'):
             y = Variable(y).cuda()
             discr.zero_grad()
             ypred, h = discr(X)
-            
             e1 = crit(ypred, y)
-            e2 = -((h  - 0.5) ** 2).sum(1).mean()
-            e3 = torch.abs(h.mean(1) - 0.5).sum()
-            loss = e1 + 0.05*(e2 + e3)
+            loss = e1
             _, m = ypred.max(1)
             acc = (m == y).float().mean().cpu().data[0]
             avg_acc = avg_acc * 0.9 + acc * 0.1
@@ -287,12 +234,10 @@ def clf(*, folder='out', dataset='celeba'):
         print('Epoch {:03d}/{:03d}, Avg acc train : {:.3f}, Acc valid : {:.3f}'.format(epoch + 1, nb_epochs, avg_acc, valid_acc))
 
 
-def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
+def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, binarize=True, batch_size=64, nz=0, model=None):
     lr = 0.0002
-    nz = 0
-    batch_size = 64
     nb_epochs = 3000
-    dataset = _load_dataset(dataset, split='train')
+    dataset = load_dataset(dataset, split='train')
     x0, _ = dataset[0]
     nc = x0.size(0)
     w = x0.size(1)
@@ -306,7 +251,6 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
     )
 
     encoder = torch.load('{}/ae.th'.format(folder))
-    print(encoder)
     if hasattr(encoder, 'latent_size'):
         cond = encoder.latent_size
     elif hasattr(encoder, 'post_latent'):
@@ -319,11 +263,19 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
         gen = torch.load('{}/gen.th'.format(folder))
         discr = torch.load('{}/discr.th'.format(folder))
     else:
-        gen = Gen(nz=nz + cond, nc=nc, act=act, w=w)
-        discr = Discr(nc=nc, act='' if wasserstein else 'sigmoid', w=w)
-
-    gen_opt = optim.Adam(gen.parameters(), lr=lr, betas=(0.5, 0.999))
-    discr_opt = optim.Adam(discr.parameters(), lr=lr, betas=(0.5, 0.999))
+        if model is None:
+            gen = Gen(nz=nz + cond, nc=nc, act=act, w=w)
+            discr = Discr(nc=nc, act='' if wasserstein else 'sigmoid', w=w)
+        elif model == 'ppgn':
+            gen = PPGen(nz=nz + cond, act=act)
+            discr = PPDiscr(act='' if wasserstein else 'sigmoid')
+    
+    if wasserstein:
+        gen_opt = optim.RMSprop(gen.parameters(), lr=lr)
+        discr_opt = optim.RMSprop(discr.parameters(), lr=lr)
+    else:
+        gen_opt = optim.Adam(gen.parameters(), lr=lr, betas=(0.5, 0.999))
+        discr_opt = optim.Adam(discr.parameters(), lr=lr, betas=(0.5, 0.999))
 
     input = torch.FloatTensor(batch_size, nc, w, h)
     noise = torch.FloatTensor(batch_size, nz, 1, 1)
@@ -344,14 +296,23 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
     discr =  discr.cuda()
     input, label = input.cuda(), label.cuda()
     noise = noise.cuda()
+
+    giter = 0
+    diter = 0
+
+    rec_list = []
+    h_rec_list = []
+    dreal_list = []
+    dfake_list = []
+
     avg_rec = 0.
+    avg_h_rec = 0.
     for epoch in range(nb_epochs):
         for i, (X, _), in enumerate(dataloader):
             if wasserstein:
                 # clamp parameters to a cube
                 for p in discr.parameters():
                     p.data.clamp_(-0.01, 0.01)
-            
             # Update discriminator
             discr.zero_grad()
             batch_size = X.size(0)
@@ -361,14 +322,16 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
             inputv = Variable(input)
             labelv = Variable(label)
             _, h = encoder(inputv)
-            h = (h > 0.5).float()
+            h_real = h
+            if binarize:
+                h = (h > 0.5).float()
             h = h.view(h.size(0), h.size(1), 1, 1)
-            h = h.repeat(1, 1, inputv.size(2), inputv.size(3))
             inputv_and_cond = inputv
             output = discr(inputv_and_cond)
             errD_real = criterion(output, labelv)
             errD_real.backward()
             D_x = output.data.mean()
+            dreal_list.append(D_x)
             
             if nz > 0:
                 noise.resize_(batch_size, nz, 1, 1).normal_(0, 1)
@@ -388,23 +351,32 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
             errD_fake = criterion(output, labelv)
             errD_fake.backward()
             D_G_z1 = output.data.mean()
-            errD = errD_real + errD_fake
+            dfake_list.append(D_G_z1)
             discr_opt.step()
-            
+            diter += 1
             # Update generator
             gen.zero_grad()
             fake = gen(noise_and_cond)
             labelv = Variable(label.fill_(real_label))
             output = discr(fake)
             rec = ((fake - inputv)**2).mean()
-            avg_rec = avg_rec * 0.99 + rec.data[0] + 0.01
-            errG = criterion(output, labelv)  + rec 
-            errG.backward()
-            D_G_z2 = output.data.mean()
-            gen_opt.step()
-            print('{}/{} Rec:{:.6f}'.format(epoch, nb_epochs, rec.data[0]))
 
-            if i % 100 == 0:
+            _, h_fake = encoder(fake)
+            h_rec = ((h_fake - h_real)**2).mean()
+
+            errG = 0.001 * criterion(output, labelv) + 3 * rec + 0.001 * h_rec
+            errG.backward()
+
+            gen_opt.step()
+            print('{}/{} Rec:{:.6f} Hrec : {:.6f} dreal : {:.6f} dfake : {:.6f}'.format(epoch, nb_epochs, rec.data[0], h_rec.data[0], D_x, D_G_z1))
+
+            avg_rec = avg_rec * 0.99 + rec.data[0] * 0.01
+            avg_h_rec = avg_h_rec * 0.99 + h_rec.data[0] * 0.01
+
+            rec_list.append(rec.data[0])
+            h_rec_list.append(h_rec.data[0])
+
+            if giter % 100 == 0:
                 x = 0.5 * (X + 1) if act == 'tanh' else X
                 f = 0.5 * (fake.data + 1) if act == 'tanh' else fake.data
                 vutils.save_image(x, '{}/real_samples.png'.format(folder), normalize=True)
@@ -413,11 +385,29 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True):
                 torch.save(discr, '{}/discr.th'.format(folder))
                 gen.apply(_save_weights)
 
+                fig = plt.figure()
+                plt.plot(rec_list)
+                plt.savefig('{}/rec.png'.format(folder))
+                plt.close(fig)
+
+                fig = plt.figure()
+                plt.plot(h_rec_list)
+                plt.savefig('{}/hrec.png'.format(folder))
+                plt.close(fig)
+                
+                fig = plt.figure()
+                plt.plot(dreal_list, label='real')
+                plt.plot(dfake_list, label='fake')
+                plt.legend()
+                plt.savefig('{}/discr.png'.format(folder))
+                plt.close(fig)
+            giter += 1
+
 
 def extract_codes(*, folder='out', dataset='celeba'):
     batch_size = 64
     exists = set()
-    dataset = _load_dataset(dataset, split='full')
+    dataset = load_dataset(dataset, split='full')
     dataloader = torch.utils.data.DataLoader(
         dataset, 
         batch_size=batch_size,
@@ -441,16 +431,98 @@ def extract_codes(*, folder='out', dataset='celeba'):
     np.savez('{}/bin.npz'.format(folder), X=exists)
 
 
-def gen(*, folder='out', dataset='celeba', way='out_of_distrib'):
+def cluster(*, folder='out', dataset='celeba'):
     batch_size = 900
-    nz = 0
-    dataset = _load_dataset(dataset, split='test')
+    ae = torch.load('{}/ae.th'.format(folder))
+    dataset = load_dataset(dataset, split='test')
     dataloader = torch.utils.data.DataLoader(
         dataset, 
         batch_size=batch_size,
         shuffle=True, 
         num_workers=1
     )
+    X, _ = next(iter(dataloader))
+    im = X.numpy()
+    X = Variable(X).cuda()
+    _, h = ae(X)
+    h = (h>0.5).float()
+    h = h.data.cpu().numpy()
+    sne = TSNE()
+    h2d = sne.fit_transform(h)
+    rows = grid_embedding(h2d)
+    im = im[rows]
+    im = grid_of_images_default(im, normalize=True)
+    imsave('{}/codes.png'.format(folder), im)
+ 
+def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0):
+    gen = torch.load('{}/gen.th'.format(folder))
+    gen.train()
+    encoder = torch.load('{}/ae.th'.format(folder))
+    clf = alexnet(pretrained=True)
+    clf = clf.cuda()
+    if hasattr(encoder, 'latent_size'):
+        cond = encoder.latent_size
+    elif hasattr(encoder, 'post_latent'):
+        cond = encoder.post_latent[0].weight.size(1)
+    else:
+        raise ValueError('no cond')
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
+    std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+    
+    grads = {}
+    def save_grads(g):
+        grads['h'] = g
+    
+    clfImageSize = 224
+    def prep(x):
+        if x.size(2) != 256:
+            x = torch.nn.UpsamplingBilinear2d(scale_factor=256//x.size(2))(x)
+        p = 256 - clfImageSize
+        if p > 0:
+            x = x[:, :, p//2:-p//2, p//2:-p//2]
+        return x
+    
+    h = torch.rand((nb_examples, cond, 1, 1))
+    h = h.cuda()
+
+    for i in range(100):
+        hv = Variable(h, requires_grad=True)
+        hv.register_hook(save_grads)
+        x = gen(hv)
+        generated = x
+        _, hrec = encoder(x)
+        hrec = hrec.view(hrec.size(0), hrec.size(1), 1, 1)
+        x = prep(x)
+        x = norm(x, mean, std)
+        y = clf(x)
+        loss = y[:, unit].mean()
+        loss.backward()
+        g = grads['h']
+        h += g.data + 0.1 * (hrec.data - h)
+        h.clamp_(0, 1)
+        #h = (h > 0.5).float()
+        print(loss.data[0])
+    
+    im = (generated.data + 1) / 2
+    im = im.cpu().numpy()
+    im = grid_of_images_default(im)
+    imsave('{}/ppgn.png'.format(folder), im)
+
+ 
+def gen(*, folder='out', dataset='celeba'):
+    batch_size = 2500
+    nz = 0
+    dataset = load_dataset(dataset, split='test')
+    dataloader = torch.utils.data.DataLoader(
+        dataset, 
+        batch_size=batch_size,
+        shuffle=True, 
+        num_workers=1
+    )
+    if not os.path.exists('{}/bin.npz'.format(folder)):
+        extract_codes(folder=folder, dataset=dataset)
     bin  = np.load('{}/bin.npz'.format(folder))
     bin = bin['X']
     exists = set()
@@ -473,7 +545,7 @@ def gen(*, folder='out', dataset='celeba', way='out_of_distrib'):
     X, y = next(iter(dataloader))
     
     # out_of_distrib
-    X = Variable(X).cuda()
+    X = Variable(X[0:900]).cuda()
     _, h = encoder(X)
     h = (h > 0.5).float()
     if nz == 0:
@@ -486,40 +558,127 @@ def gen(*, folder='out', dataset='celeba', way='out_of_distrib'):
     h2d = sne.fit_transform(im.reshape((im.shape[0], -1)))
     rows = grid_embedding(h2d)
     im = im[rows]
+    fake_images = im
     im = grid_of_images_default(im, normalize=True)
     imsave('{}/check_fake_samples.png'.format(folder), im)
     im = X.data.cpu().numpy()
     im = im[rows]
+    real_images = im
     im = grid_of_images_default(im, normalize=True)
     imsave('{}/check_true_samples.png'.format(folder), im)
-    
     # out_of_code
-    h_list = []
-    while len(h_list) < batch_size:
+    tree = BallTree(bin, metric='hamming')
+    h_new = []
+    h_train = []
+    while len(h_new) < batch_size:
         h = (np.random.uniform(size=cond)<=(0.5)).tolist()
         h = tuple(h)
-        if h in exists:
+        dist, ind = tree.query([h], k=1)
+        dist = dist[0, 0]
+        ind = ind[0, 0]
+        if dist == 0:
             continue
-        h_list.append(h)
-    h = np.array(h_list).astype('float32')
+        h_new.append(h)
+        h_train.append(bin[ind])
+
+    h_new = np.array(h_new).astype('float32')
+    h_train = np.array(h_train).astype('float32')
+
+    def forward(h):
+        h = torch.from_numpy(h)
+        h = Variable(h).cuda()
+        if nz == 0:
+            noise_and_cond = h.view(h.size(0), h.size(1), 1, 1)
+        else:
+            noise_and_cond = torch.cat((noise, h.view(h.size(0), h.size(1), 1, 1)), 1)
+        fake = gen(noise_and_cond)
+        im = fake.data.cpu().numpy()
+
+        _, h_fake = encoder(fake)
+        return im
+    
+    im_new = minibatcher(forward, h_new)
+    im_train = minibatcher(forward, h_train)
+
     sne = TSNE()
-    h2d = sne.fit_transform(h)
+    h2d = sne.fit_transform(im_new.reshape((im_new.shape[0], -1)))
     rows = grid_embedding(h2d)
-    h = h[rows]
-    h = torch.from_numpy(h)
-    h = Variable(h).cuda()
-    if nz == 0:
-        noise_and_cond = h.view(h.size(0), h.size(1), 1, 1)
-    else:
-        noise_and_cond = torch.cat((noise, h.view(h.size(0), h.size(1), 1, 1)), 1)
-    fake = gen(noise_and_cond)
-    im = fake.data.cpu().numpy()
-    sne = TSNE()
-    h2d = sne.fit_transform(im.reshape((im.shape[0], -1)))
-    rows = grid_embedding(h2d)
-    im = im[rows]
-    im = grid_of_images_default(im, normalize=True)
-    imsave('{}/check_new_samples.png'.format(folder), im)
+    im_new = im_new[rows]
+    new_images = im_new
+    im_train = im_train[rows]
+    np.savez('{}/im_new.npz'.format(folder), X=im_new)
+    im_new = grid_of_images_default(im_new, normalize=True)
+    imsave('{}/check_new_samples.png'.format(folder), im_new)
+    im_train = grid_of_images_default(im_train, normalize=True)
+    imsave('{}/check_new_samples_nearest_on_data.png'.format(folder), im_train)
+
+    # TSNE
+    # real_images, fake_images, new_images, nearest_train_images
+    clf = alexnet(pretrained=True)
+    clf = clf.cuda()
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
+    clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+
+    def enc(X):
+        if X.shape[1] == 1:
+            return X.reshape((X.shape[0], -1))
+        else:
+            X = torch.from_numpy(X)
+            X = Variable(X)
+            X = X.cuda()
+            X = norm(X, clf_mean, clf_std)
+            h = clf.features(X)
+            h = h.view(h.size(0), -1)
+            h = h.data.cpu().numpy()
+            return h
+    h_real_images = []
+    for i in range(0, real_images.shape[0], 64):
+        h_real_images.append(enc(real_images[i:i+64]))
+    h_real_images = np.concatenate(h_real_images, axis=0)
+    
+    h_list  = [
+        minibatcher(enc, real_images),
+        minibatcher(enc, fake_images),
+        minibatcher(enc, new_images)
+    ]
+    labels = np.array(
+        [0] * real_images.shape[0] + 
+        [1] * fake_images.shape[0] + 
+        [2] * new_images.shape[0]
+    )
+    H = np.concatenate(h_list, axis=0)
+    sne = TSNE(perplexity=50)
+    H = sne.fit_transform(H)
+    
+    fig = plt.figure(figsize=(10, 10))
+    colors = [
+        'r',
+        'g',
+        'orange',
+    ]
+    caption = [
+        'real',
+        'fake',
+        'new'
+    ]
+    for label in (0, 1, 2):
+        g = labels == label
+        plt.scatter(H[g, 0], H[g, 1],
+                    marker='+', c=colors[label], s=40, alpha=0.7,
+                    label=caption[label])
+    plt.legend()
+    plt.savefig('{}/sne.png'.format(folder))
+    plt.close(fig)
+   
+
+def minibatcher(f, X, batch_size=64):
+    h = []
+    for i in range(0, len(X), batch_size):
+        h.append(f(X[i:i+batch_size]))
+    return np.concatenate(h, axis=0)
+
 
 if __name__ == '__main__':
-    run([train, gen, clf, extract_codes, ae, pretrained])
+    run([train, gen, clf, extract_codes, ae, pretrained, cluster, pretrained_frozen, ppgn])

@@ -19,5 +19,3 @@ def grid_embedding(h):
     cost_matrix = cost_matrix * (100000 / cost_matrix.max())
     _, rows, cols = lapjv(cost_matrix)
     return rows
-
-
