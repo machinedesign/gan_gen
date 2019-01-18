@@ -214,6 +214,20 @@ class Pretrained(nn.Module):
         return (htrue, hrec), hbin
 
 
+class Resize(nn.Module):
+
+    def __init__(self, size=2, nc=3, w=256):
+        super().__init__()
+        self.pool = nn.AvgPool2d(size)
+        self.latent_size = ((w * w) // (size*size)) * nc
+        print(self.latent_size)
+
+    def forward(self, x):
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)
+        return None, x
+
+
 class PretrainedFrozen(nn.Module):
 
     def __init__(self, features, classifier, h_size=4096):

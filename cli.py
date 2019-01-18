@@ -1,5 +1,7 @@
 import matplotlib as mpl
 mpl.use('Agg')
+import pandas as pd
+from collections import defaultdict
 import matplotlib.pyplot as plt
 from functools import partial
 from itertools import chain
@@ -30,6 +32,7 @@ from model import PretrainedFrozen
 from model import PPGen
 from model import PPDiscr
 from model import norm
+from model import Resize
 
 from utils import grid_embedding 
 
@@ -114,6 +117,10 @@ def pretrained_frozen(*, folder='out', h_size=4096):
     clf = PretrainedFrozen(features=clf.features, classifier=clf.classifier, h_size=h_size)
     torch.save(clf, os.path.join(folder, 'ae.th'))
 
+def resize(*, folder='out', size=2, nc=3, w=256):
+    ae = Resize(size, nc=nc, w=w)
+    torch.save(ae, os.path.join(folder, 'ae.th'))
+    
 
 def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='binary', h_size=256, classifier='alexnet'):
     lr = 1e-4
@@ -234,7 +241,8 @@ def clf(*, folder='out', dataset='celeba', no=26):
         print('Epoch {:03d}/{:03d}, Avg acc train : {:.3f}, Acc valid : {:.3f}'.format(epoch + 1, nb_epochs, avg_acc, valid_acc))
 
 
-def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, binarize=True, batch_size=64, nz=0, model=None):
+def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, binarize=False,
+          batch_size=64, nz=0, model=None):
     lr = 0.0002
     nb_epochs = 3000
     dataset = load_dataset(dataset, split='train')
@@ -297,16 +305,8 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
     input, label = input.cuda(), label.cuda()
     noise = noise.cuda()
 
-    giter = 0
-    diter = 0
-
-    rec_list = []
-    h_rec_list = []
-    dreal_list = []
-    dfake_list = []
-
-    avg_rec = 0.
-    avg_h_rec = 0.
+    stats = defaultdict(list)
+    nb_updates = 0
     for epoch in range(nb_epochs):
         for i, (X, _), in enumerate(dataloader):
             if wasserstein:
@@ -331,7 +331,6 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
             errD_real = criterion(output, labelv)
             errD_real.backward()
             D_x = output.data.mean()
-            dreal_list.append(D_x)
             
             if nz > 0:
                 noise.resize_(batch_size, nz, 1, 1).normal_(0, 1)
@@ -351,9 +350,7 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
             errD_fake = criterion(output, labelv)
             errD_fake.backward()
             D_G_z1 = output.data.mean()
-            dfake_list.append(D_G_z1)
             discr_opt.step()
-            diter += 1
             # Update generator
             gen.zero_grad()
             fake = gen(noise_and_cond)
@@ -364,44 +361,30 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
             _, h_fake = encoder(fake)
             h_rec = ((h_fake - h_real)**2).mean()
 
-            errG = 0.001 * criterion(output, labelv) + 3 * rec + 0.001 * h_rec
+            g = criterion(output, labelv)
+            errG = 0.001 * g + 3 * rec + 0.001 * h_rec
             errG.backward()
 
             gen_opt.step()
             print('{}/{} Rec:{:.6f} Hrec : {:.6f} dreal : {:.6f} dfake : {:.6f}'.format(epoch, nb_epochs, rec.data[0], h_rec.data[0], D_x, D_G_z1))
+            
+            nb_updates += 1
+            stats['iter'].append(nb_updates)
+            stats['rec'].append(rec.data[0])
+            stats['h_rec'].append(h_rec.data[0])
+            stats['discr_real'].append(errD_real.data[0])
+            stats['discr_fake'].append(errD_fake.data[0])
 
-            avg_rec = avg_rec * 0.99 + rec.data[0] * 0.01
-            avg_h_rec = avg_h_rec * 0.99 + h_rec.data[0] * 0.01
-
-            rec_list.append(rec.data[0])
-            h_rec_list.append(h_rec.data[0])
-
-            if giter % 100 == 0:
+            if nb_updates % 100 == 0:
                 x = 0.5 * (X + 1) if act == 'tanh' else X
                 f = 0.5 * (fake.data + 1) if act == 'tanh' else fake.data
                 vutils.save_image(x, '{}/real_samples.png'.format(folder), normalize=True)
                 vutils.save_image(f, '{}/fake_samples_epoch_{:03d}.png'.format(folder, epoch), normalize=True)
                 torch.save(gen, '{}/gen.th'.format(folder))
                 torch.save(discr, '{}/discr.th'.format(folder))
+                torch.save(clf, '{}/clf.th'.format(folder))
                 gen.apply(_save_weights)
-
-                fig = plt.figure()
-                plt.plot(rec_list)
-                plt.savefig('{}/rec.png'.format(folder))
-                plt.close(fig)
-
-                fig = plt.figure()
-                plt.plot(h_rec_list)
-                plt.savefig('{}/hrec.png'.format(folder))
-                plt.close(fig)
-                
-                fig = plt.figure()
-                plt.plot(dreal_list, label='real')
-                plt.plot(dfake_list, label='fake')
-                plt.legend()
-                plt.savefig('{}/discr.png'.format(folder))
-                plt.close(fig)
-            giter += 1
+                pd.DataFrame(stats).to_csv('{}/stats.csv'.format(folder))
 
 
 def extract_codes(*, folder='out', dataset='celeba'):
@@ -681,4 +664,4 @@ def minibatcher(f, X, batch_size=64):
 
 
 if __name__ == '__main__':
-    run([train, gen, clf, extract_codes, ae, pretrained, cluster, pretrained_frozen, ppgn])
+    run([train, gen, clf, extract_codes, ae, pretrained, cluster, pretrained_frozen, ppgn, resize])
