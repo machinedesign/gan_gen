@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.utils as vutils
 from torchvision.models import alexnet
-from machinedesign.viz import grid_of_images_default
+from utils import grid_of_images_default
 
 from model import Gen
 from model import AE
