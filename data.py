@@ -11,7 +11,7 @@ def data_path(folder):
     return os.path.join(DATA_PATH, folder)
 
 
-def load_dataset(dataset_name, split='full'):
+def load_dataset(dataset_name, split='full', size=None):
     if dataset_name == 'mnist':
         dataset = dset.MNIST(
             root=data_path('mnist'), 
@@ -97,9 +97,13 @@ def load_dataset(dataset_name, split='full'):
          ]))
         return dataset
     else:
+        if size is None:
+            size = 64
+        else:
+            size = int(size)
         dataset = dset.ImageFolder(root=data_path(dataset_name),
             transform=transforms.Compose([
-            transforms.Scale(64),
+            transforms.Scale(size),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
          ]))

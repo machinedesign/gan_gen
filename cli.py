@@ -65,7 +65,7 @@ def face_descriptor(*, folder='out'):
 def ae(*, folder='out', dataset='celeba', latent_size=100, round=False, device="cuda"):
     lr = 1e-4
     batch_size = 64
-    train = load_dataset(dataset, split='train')
+    train = load_dataset(dataset)
     _save_weights = partial(save_weights, folder=folder, prefix='ae')
     trainl = torch.utils.data.DataLoader(
         train, 
