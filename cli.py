@@ -1,5 +1,3 @@
-import matplotlib as mpl
-mpl.use('Agg')
 import pandas as pd
 from collections import defaultdict
 import matplotlib.pyplot as plt
@@ -33,10 +31,12 @@ from model import PPGen
 from model import PPDiscr
 from model import norm
 from model import Resize
+from model FaceDescriptor
 
 from utils import grid_embedding 
 
 from data import load_dataset
+
 
 def save_weights(m, folder='out', prefix=''):
     if isinstance(m, nn.Linear):
@@ -55,6 +55,11 @@ def save_weights(m, folder='out', prefix=''):
         elif w.size(1) == 3:
             gr = grid_of_images_default(np.array(w.tolist()), normalize=True)
             imsave('{}/{}_feat_{}.png'.format(folder, prefix, w.size(0)), gr)
+
+
+def face_descriptor(*, folder='out'):
+    face_desc = FaceDescriptor()
+    torch.save(clf, os.path.join(folder, 'ae.th'))
 
 
 def ae(*, folder='out', dataset='celeba', latent_size=100, round=False):

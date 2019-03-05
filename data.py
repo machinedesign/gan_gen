@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 from utils import Invert
 from utils import Gray
 
-DATA_PATH = '/home/mcherti/work/data'
+DATA_PATH = 'data'
 def data_path(folder):
     return os.path.join(DATA_PATH, folder)
 
@@ -94,6 +94,15 @@ def load_dataset(dataset_name, split='full'):
             Invert(),
             Gray(),
             transforms.Normalize((0.5,), (0.5,)),
+         ]))
+        return dataset
+    else:
+        dataset = dset.ImageFolder(root=data_path(dataset_name),
+            transform=transforms.Compose([
+            transforms.Scale(78),
+            transforms.CenterCrop(64),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
          ]))
         return dataset
     else:

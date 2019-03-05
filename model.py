@@ -5,6 +5,8 @@ import torch.nn as nn
 from torch.nn.init import xavier_uniform
 from torch.autograd import Variable
 
+from light_cnn import LightCNN_29Layers_v2
+
 class Gen(nn.Module):
     def __init__(self, nz=100, ngf=64, nc=1, act='tanh', w=64):
         super().__init__()
@@ -381,3 +383,23 @@ def weights_init(m):
         xavier_uniform(m.weight.data)
         m.bias.data.fill_(0)
 
+
+class FaceDescriptor:
+
+    def __init__(self, path="LightCNN_29Layers_V2_checkpoint.pth.tar", device="cpu"):
+        model = LightCNN_29Layers_v2(num_classes=80013)
+        checkpoint = torch.load(path, map_location="cpu")
+        ck = checkpoint['state_dict']
+        ck_ = {}
+        for k, v in ck.items():
+            ck_[k.replace("module.", "")] = v
+        model.load_state_dict(ck_)
+        model.to(device)
+        self.net = model
+        self.latent_size = 128
+
+    def forward(self, x):
+        x = (x + 1) / 2.
+        x = x.mean(dim=1, keepdim=True) #grayscale
+        x = nn.AdaptiveAvgPool2d((128, 128))(x) #resize to 128x128
+        return self.net(x)
