@@ -132,7 +132,7 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='b
     batch_size = 64
     nb_epochs = 200
 
-    train = load_dataset(dataset, split='train')
+    train = load_dataset(dataset)
     trainl = torch.utils.data.DataLoader(
         train, 
         batch_size=batch_size,
