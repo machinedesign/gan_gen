@@ -62,7 +62,7 @@ def face_descriptor(*, folder='out'):
     torch.save(clf, os.path.join(folder, 'ae.th'))
 
 
-def ae(*, folder='out', dataset='celeba', latent_size=100, round=False):
+def ae(*, folder='out', dataset='celeba', latent_size=100, round=False, device="cuda"):
     lr = 1e-4
     batch_size = 64
     train = load_dataset(dataset, split='train')
@@ -77,7 +77,7 @@ def ae(*, folder='out', dataset='celeba', latent_size=100, round=False):
     nc = x0.size(0)
     width = x0.size(2)
     ae = AE(nc=nc, latent_size=latent_size, w=width, round=round)
-    ae = ae.cuda()
+    ae = ae.to(device)
     opt = optim.Adam(ae.parameters(), lr=lr, betas=(0.5, 0.999))
     nb_epochs = 200
     avg_loss = 0.
@@ -88,7 +88,7 @@ def ae(*, folder='out', dataset='celeba', latent_size=100, round=False):
     t0 = time.time()
     for epoch in range(nb_epochs):
         for X, _ in trainl:
-            X = Variable(X).cuda()
+            X = Variable(X).to(device)
             ae.zero_grad()
             Xrec, h = ae(X)
             e1 = ((X - Xrec)**2).mean()
@@ -116,9 +116,9 @@ def ae(*, folder='out', dataset='celeba', latent_size=100, round=False):
         torch.save(ae, '{}/ae.th'.format(folder))
 
 
-def pretrained_frozen(*, folder='out', h_size=4096):
+def pretrained_frozen(*, folder='out', h_size=4096, device="cuda"):
     clf = alexnet(pretrained=True)
-    clf = clf.cuda()
+    clf = clf.to(device)
     clf = PretrainedFrozen(features=clf.features, classifier=clf.classifier, h_size=h_size)
     torch.save(clf, os.path.join(folder, 'ae.th'))
 
@@ -127,7 +127,7 @@ def resize(*, folder='out', size=2, nc=3, w=256):
     torch.save(ae, os.path.join(folder, 'ae.th'))
     
 
-def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='binary', h_size=256, classifier='alexnet'):
+def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='binary', h_size=256, classifier='alexnet', device="cuda"):
     lr = 1e-4
     batch_size = 64
     nb_epochs = 200
@@ -141,13 +141,13 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='b
     )
     if classifier == 'alexnet':
         clf = alexnet(pretrained=True)
-        clf = clf.cuda()
+        clf = clf.to(device)
     else:
         clf = torch.load(classifier)
-        clf = clf.cuda()
+        clf = clf.to(device)
     features = clf.features if hasattr(clf, 'features') else clf.main
     fe = Pretrained(features, latent_size=latent_size, h_size=h_size)
-    fe = fe.cuda()
+    fe = fe.to(device)
     opt = optim.Adam(chain(fe.encode.parameters(), fe.decode.parameters()), lr=lr, betas=(0.5, 0.999))
     t0 = time.time()
     nb_updates = 0
@@ -157,7 +157,7 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='b
     avg_e3 = 0.
     for epoch in range(nb_epochs):
         for X, _ in trainl:
-            X = Variable(X).cuda()
+            X = Variable(X).to(device)
             (htrue, hrec), hbin = fe(X)
             fe.zero_grad()
             if constraint == 'binary':
@@ -191,7 +191,7 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='b
         torch.save(fe, '{}/ae.th'.format(folder))
 
 
-def clf(*, folder='out', dataset='celeba', no=26):
+def clf(*, folder='out', dataset='celeba', no=26, device="cuda"):
     lr = 1e-4
     batch_size = 64
     train = load_dataset(dataset, split='train')
@@ -212,7 +212,7 @@ def clf(*, folder='out', dataset='celeba', no=26):
     x0, _ = train[0]
     nc = x0.size(0)
     discr = Clf(nc=nc, no=no)
-    discr = discr.cuda()
+    discr = discr.to(device)
     opt = optim.Adam(discr.parameters(), lr=lr, betas=(0.5, 0.999))
     nb_epochs = 40
     avg_acc = 0.
@@ -220,8 +220,8 @@ def clf(*, folder='out', dataset='celeba', no=26):
     max_valid_acc = 0
     for epoch in range(nb_epochs):
         for X, y in trainl:
-            X = Variable(X).cuda()
-            y = Variable(y).cuda()
+            X = Variable(X).to(device)
+            y = Variable(y).to(device)
             discr.zero_grad()
             ypred, h = discr(X)
             e1 = crit(ypred, y)
@@ -233,8 +233,8 @@ def clf(*, folder='out', dataset='celeba', no=26):
             opt.step()
         accs = []
         for X, y in validl:
-            X = Variable(X).cuda()
-            y = Variable(y).cuda()
+            X = Variable(X).to(device)
+            y = Variable(y).to(device)
             ypred, _ = discr(X)
             _, m = ypred.max(1)
             accs.extend((m==y).float().data.cpu().numpy())
@@ -247,7 +247,7 @@ def clf(*, folder='out', dataset='celeba', no=26):
 
 
 def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, binarize=False,
-          batch_size=64, nz=0, model=None):
+          batch_size=64, nz=0, model=None, device="cuda"):
     lr = 0.0002
     nb_epochs = 3000
     dataset = load_dataset(dataset, split='train')
@@ -303,12 +303,12 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
         fake_label = 0
         criterion = nn.BCELoss()
 
-    encoder = encoder.cuda()
+    encoder = encoder.to(device)
 
-    gen = gen.cuda()
-    discr =  discr.cuda()
-    input, label = input.cuda(), label.cuda()
-    noise = noise.cuda()
+    gen = gen.to(device)
+    discr =  discr.to(device)
+    input, label = input.to(device), label.to(device)
+    noise = noise.to(device)
 
     stats = defaultdict(list)
     nb_updates = 0
@@ -321,7 +321,7 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
             # Update discriminator
             discr.zero_grad()
             batch_size = X.size(0)
-            X = X.cuda()
+            X = X.to(device)
             input.resize_as_(X).copy_(X)
             label.resize_(batch_size).fill_(real_label)
             inputv = Variable(input)
@@ -392,7 +392,7 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
                 pd.DataFrame(stats).to_csv('{}/stats.csv'.format(folder))
 
 
-def extract_codes(*, folder='out', dataset='celeba'):
+def extract_codes(*, folder='out', dataset='celeba', device="cuda"):
     batch_size = 64
     exists = set()
     dataset = load_dataset(dataset, split='full')
@@ -405,7 +405,7 @@ def extract_codes(*, folder='out', dataset='celeba'):
     encoder = torch.load('{}/ae.th'.format(folder))
     nb = 0
     for X, y in dataloader:
-        X = Variable(X).cuda()
+        X = Variable(X).to(device)
         _, h = encoder(X)
         h = (h > 0.5).float()
         h = h.data.cpu().numpy().tolist()
@@ -419,7 +419,7 @@ def extract_codes(*, folder='out', dataset='celeba'):
     np.savez('{}/bin.npz'.format(folder), X=exists)
 
 
-def cluster(*, folder='out', dataset='celeba'):
+def cluster(*, folder='out', dataset='celeba', device="cuda"):
     batch_size = 900
     ae = torch.load('{}/ae.th'.format(folder))
     dataset = load_dataset(dataset, split='test')
@@ -431,7 +431,7 @@ def cluster(*, folder='out', dataset='celeba'):
     )
     X, _ = next(iter(dataloader))
     im = X.numpy()
-    X = Variable(X).cuda()
+    X = Variable(X).to(device)
     _, h = ae(X)
     h = (h>0.5).float()
     h = h.data.cpu().numpy()
@@ -442,12 +442,12 @@ def cluster(*, folder='out', dataset='celeba'):
     im = grid_of_images_default(im, normalize=True)
     imsave('{}/codes.png'.format(folder), im)
  
-def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0):
+def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0, device="cuda"):
     gen = torch.load('{}/gen.th'.format(folder))
     gen.train()
     encoder = torch.load('{}/ae.th'.format(folder))
     clf = alexnet(pretrained=True)
-    clf = clf.cuda()
+    clf = clf.to(device)
     if hasattr(encoder, 'latent_size'):
         cond = encoder.latent_size
     elif hasattr(encoder, 'post_latent'):
@@ -456,8 +456,8 @@ def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0):
         raise ValueError('no cond')
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
-    mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
-    std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+    mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).to(device)
+    std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).to(device)
     
     grads = {}
     def save_grads(g):
@@ -473,7 +473,7 @@ def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0):
         return x
     
     h = torch.rand((nb_examples, cond, 1, 1))
-    h = h.cuda()
+    h = h.to(device)
 
     for i in range(100):
         hv = Variable(h, requires_grad=True)
@@ -499,7 +499,7 @@ def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0):
     imsave('{}/ppgn.png'.format(folder), im)
 
  
-def gen(*, folder='out', dataset='celeba'):
+def gen(*, folder='out', dataset='celeba', device="cuda"):
     batch_size = 2500
     nz = 0
     dataset = load_dataset(dataset, split='test')
@@ -528,12 +528,12 @@ def gen(*, folder='out', dataset='celeba'):
     else:
         raise ValueError('no cond')
 
-    noise = torch.FloatTensor(batch_size, nz, 1, 1).normal_(0, 1).cuda()
+    noise = torch.FloatTensor(batch_size, nz, 1, 1).normal_(0, 1).to(device)
     noise = Variable(noise)
     X, y = next(iter(dataloader))
     
     # out_of_distrib
-    X = Variable(X[0:900]).cuda()
+    X = Variable(X[0:900]).to(device)
     _, h = encoder(X)
     h = (h > 0.5).float()
     if nz == 0:
@@ -574,7 +574,7 @@ def gen(*, folder='out', dataset='celeba'):
 
     def forward(h):
         h = torch.from_numpy(h)
-        h = Variable(h).cuda()
+        h = Variable(h).to(device)
         if nz == 0:
             noise_and_cond = h.view(h.size(0), h.size(1), 1, 1)
         else:
@@ -603,19 +603,18 @@ def gen(*, folder='out', dataset='celeba'):
     # TSNE
     # real_images, fake_images, new_images, nearest_train_images
     clf = alexnet(pretrained=True)
-    clf = clf.cuda()
+    clf = clf.to(device)
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
-    clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
-    clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
-
+    clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).to(device)
+    clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).to(device)
     def enc(X):
         if X.shape[1] == 1:
             return X.reshape((X.shape[0], -1))
         else:
             X = torch.from_numpy(X)
             X = Variable(X)
-            X = X.cuda()
+            X = X.to(device)
             X = norm(X, clf_mean, clf_std)
             h = clf.features(X)
             h = h.view(h.size(0), -1)
