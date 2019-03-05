@@ -31,7 +31,7 @@ from model import PPGen
 from model import PPDiscr
 from model import norm
 from model import Resize
-from model FaceDescriptor
+from model import FaceDescriptor
 
 from utils import grid_embedding 
 
@@ -59,7 +59,7 @@ def save_weights(m, folder='out', prefix=''):
 
 def face_descriptor(*, folder='out'):
     face_desc = FaceDescriptor()
-    torch.save(clf, os.path.join(folder, 'ae.th'))
+    torch.save(face_desc, os.path.join(folder, 'ae.th'))
 
 
 def ae(*, folder='out', dataset='celeba', latent_size=100, round=False, device="cuda"):
@@ -97,10 +97,10 @@ def ae(*, folder='out', dataset='celeba', latent_size=100, round=False, device="
             loss = e1
             loss.backward()
             opt.step()
-            avg_loss = avg_loss * 0.9 + loss.data[0] * 0.1
-            avg_e1 = avg_e1 * 0.9 + e1.data[0] * 0.1
-            avg_e2 = avg_e2 * 0.9 + e2.data[0] * 0.1
-            avg_e3 = avg_e3 * 0.9 + e3.data[0] * 0.1
+            avg_loss = avg_loss * 0.9 + loss.item() * 0.1
+            avg_e1 = avg_e1 * 0.9 + e1.item() * 0.1
+            avg_e2 = avg_e2 * 0.9 + e2.item() * 0.1
+            avg_e3 = avg_e3 * 0.9 + e3.item() * 0.1
             if nb_updates % 100 == 0:
                 dt = time.time() - t0
                 t0 = time.time()
@@ -177,10 +177,10 @@ def pretrained(*, folder='out', dataset='celeba', latent_size=200, constraint='b
                 loss = e1
             loss.backward()
             opt.step()
-            avg_loss = avg_loss * 0.9 + loss.data[0] * 0.1
-            avg_e1 = avg_e1 * 0.9 + e1.data[0] * 0.1
-            avg_e2 = avg_e2 * 0.9 + e2.data[0] * 0.1
-            avg_e3 = avg_e3 * 0.9 + e3.data[0] * 0.1
+            avg_loss = avg_loss * 0.9 + loss.item() * 0.1
+            avg_e1 = avg_e1 * 0.9 + e1.item() * 0.1
+            avg_e2 = avg_e2 * 0.9 + e2.item() * 0.1
+            avg_e3 = avg_e3 * 0.9 + e3.item() * 0.1
             if nb_updates % 100 == 0:
                 dt = time.time() - t0
                 t0 = time.time()
@@ -227,7 +227,7 @@ def clf(*, folder='out', dataset='celeba', no=26, device="cuda"):
             e1 = crit(ypred, y)
             loss = e1
             _, m = ypred.max(1)
-            acc = (m == y).float().mean().cpu().data[0]
+            acc = (m == y).float().mean().cpu().item()
             avg_acc = avg_acc * 0.9 + acc * 0.1
             loss.backward()
             opt.step()
@@ -242,7 +242,6 @@ def clf(*, folder='out', dataset='celeba', no=26, device="cuda"):
         if valid_acc > max_valid_acc:
             max_valid_acc = valid_acc
             torch.save(discr, '{}/clf.th'.format(folder))
-        print(h.data[0])
         print('Epoch {:03d}/{:03d}, Avg acc train : {:.3f}, Acc valid : {:.3f}'.format(epoch + 1, nb_epochs, avg_acc, valid_acc))
 
 
@@ -282,7 +281,6 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
         elif model == 'ppgn':
             gen = PPGen(nz=nz + cond, act=act)
             discr = PPDiscr(act='' if wasserstein else 'sigmoid')
-    
     if wasserstein:
         gen_opt = optim.RMSprop(gen.parameters(), lr=lr)
         discr_opt = optim.RMSprop(discr.parameters(), lr=lr)
@@ -371,14 +369,19 @@ def train(*, folder='out', dataset='celeba', resume=False, wasserstein=True, bin
             errG.backward()
 
             gen_opt.step()
-            print('{}/{} Rec:{:.6f} Hrec : {:.6f} dreal : {:.6f} dfake : {:.6f}'.format(epoch, nb_epochs, rec.data[0], h_rec.data[0], D_x, D_G_z1))
-            
+            print('{}/{} Rec:{:.6f} Hrec : {:.6f} dreal : {:.6f} dfake : {:.6f}'.format(
+                epoch, 
+                nb_epochs, 
+                rec.item(),
+                h_rec.item(), 
+                D_x, D_G_z1
+            ))
             nb_updates += 1
             stats['iter'].append(nb_updates)
-            stats['rec'].append(rec.data[0])
-            stats['h_rec'].append(h_rec.data[0])
-            stats['discr_real'].append(errD_real.data[0])
-            stats['discr_fake'].append(errD_fake.data[0])
+            stats['rec'].append(rec.item())
+            stats['h_rec'].append(h_rec.item())
+            stats['discr_real'].append(errD_real.item())
+            stats['discr_fake'].append(errD_fake.item())
 
             if nb_updates % 100 == 0:
                 x = 0.5 * (X + 1) if act == 'tanh' else X
@@ -491,7 +494,7 @@ def ppgn(*, folder='out', dataset='celeba', nb_examples=1, unit=0, device="cuda"
         h += g.data + 0.1 * (hrec.data - h)
         h.clamp_(0, 1)
         #h = (h > 0.5).float()
-        print(loss.data[0])
+        print(loss.item())
     
     im = (generated.data + 1) / 2
     im = im.cpu().numpy()
@@ -668,4 +671,4 @@ def minibatcher(f, X, batch_size=64):
 
 
 if __name__ == '__main__':
-    run([train, gen, clf, extract_codes, ae, pretrained, cluster, pretrained_frozen, ppgn, resize])
+    run([train, gen, clf, extract_codes, ae, pretrained, cluster, pretrained_frozen, ppgn, resize, face_descriptor])

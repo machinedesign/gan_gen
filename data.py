@@ -99,11 +99,8 @@ def load_dataset(dataset_name, split='full'):
     else:
         dataset = dset.ImageFolder(root=data_path(dataset_name),
             transform=transforms.Compose([
-            transforms.Scale(78),
-            transforms.CenterCrop(64),
+            transforms.Scale(64),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
          ]))
         return dataset
-    else:
-        raise ValueError('unknown dataset')

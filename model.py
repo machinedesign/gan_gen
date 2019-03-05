@@ -384,9 +384,10 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 
-class FaceDescriptor:
+class FaceDescriptor(nn.Module):
 
     def __init__(self, path="LightCNN_29Layers_V2_checkpoint.pth.tar", device="cpu"):
+        super().__init__()
         model = LightCNN_29Layers_v2(num_classes=80013)
         checkpoint = torch.load(path, map_location="cpu")
         ck = checkpoint['state_dict']
@@ -396,7 +397,7 @@ class FaceDescriptor:
         model.load_state_dict(ck_)
         model.to(device)
         self.net = model
-        self.latent_size = 128
+        self.latent_size = 256
 
     def forward(self, x):
         x = (x + 1) / 2.
